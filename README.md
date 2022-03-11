@@ -3,6 +3,7 @@
  
  ## awesome functions
  In future Options, you'll need to risk taking a lot (on leverage 100X you can bankrupt only 1%!!!!)
+ 
  you can restrict your lose percentage by using finisher()!!! 
  
  
