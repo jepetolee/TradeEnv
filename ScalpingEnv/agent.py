@@ -1,21 +1,19 @@
-from binance.client import Client
+from binance.client import Client, BaseClient
 from pandas import DataFrame
 from time import sleep
 from binance.exceptions import BinanceAPIException
 
+
 class FutureAgent:
     def __init__(self, api_key, api_secret, test=False):
 
-        self.agent = Client(api_key=api_key, api_secret=api_secret, testnet=test)
-        self.agent
+        self.agent = Client(api_key=api_key, api_secret=api_secret)
+
         self.leverage = 1
         # 현재 잔고 조회
-        self.account = 1
-        self.current_percent = 1
-        self.check_account()
-        self.seed_money = self.account
-
+        self.withdrawAvailable = 1
         self.shutdown = False
+        self.time_steps = 0
         self.position = 'SELL'
 
         self.symbol = 'BTCUSDT'
@@ -27,10 +25,16 @@ class FutureAgent:
         # 현재가
         self.current_price = 1
         # 내가 지정한 종료가
-        self.stop_price = 1
+        self.stop_price = 38000
+
+        self.account = 1
+        self.current_percent = 1
+        self.check_account()
+        self.seed_money = self.account
 
     # 포지션 변경(내부값)
     def reverse_position(self):
+
         if self.position == 'SELL':
             self.position = 'BUY'
         else:
@@ -38,28 +42,35 @@ class FutureAgent:
 
     def orderbook(self):
         try:
-            return self.agent.futures_orderbook_ticker()
+            return self.agent.futures_order_book(symbol=self.symbol)
         except BinanceAPIException as e:
             self.shutdown = True
-            print("Agent: 호가창 조회 에러!-"+e)
+            print("Agent: 호가창 조회 에러!-" + e)
             self.safe_shutdown()
             return
 
     # 안전하게 현물로 포지션 종결가 체결
-    def safe_shutdown(self):
+    def safe_shutdown(self, reversed_once=False):
         if self.shutdown is True:
-            self.reverse_position()
-            self.agent.futures_cancel_all_open_orders()
-            self.agent.futures_create_order(symbol=self.symbol, side=self.position,
-                                            stopPrice=self.stop_price, closePosition='true',
-                                            type='STOP', reduceOnly='true')
-            sleep(0.75)
-            checker = self.agent.futures_account_trades()
-            check = checker[-1]
-            if check['status'] == 'NEW':
-                self.force_close_position()
 
-            print("Agent: 셧다운이 감지되었습니다. 모든 포지션을 빠르게 종료해 손실을 차단했습니다.")
+            try:
+                if not reversed_once:
+                    self.reverse_position()
+                self.agent.futures_cancel_all_open_orders(symbol=self.symbol)
+                if self.time_steps != 0:
+                    self.agent.futures_create_order(symbol=self.symbol, side=self.position,
+                                                    stopPrice=self.stop_price, closePosition='true',
+                                                    type=BaseClient.FUTURE_ORDER_TYPE_LIMIT)
+                    sleep(0.75)
+                    checker = self.agent.futures_get_all_orders()
+
+                    if checker[-1]['status'] == 'NEW':
+                        self.force_close_position()
+
+                print("Agent: 셧다운이 감지되었습니다. 모든 포지션을 빠르게 종료해 손실을 차단했습니다.")
+
+            except BinanceAPIException as e:
+                print(e)
         else:
             print("Agent: DEADLY_ERROR!!! You Need to Close Your Position By Direct Immediately")
         return
@@ -74,14 +85,14 @@ class FutureAgent:
     def force_close_position(self, error_times=0):
         try:
             self.agent.futures_create_order(symbol=self.symbol, side=self.position,
-                                            closePosition='true',
-                                            type='STOP_MARKET', reduceOnly='true')
-            self.safe_shutdown()
+                                            closePosition='true', stopPrice=self.current_price,
+                                            type=BaseClient.FUTURE_ORDER_TYPE_STOP_MARKET, amount=self.quantity)
+            self.safe_shutdown(reversed_once=True)
         except BinanceAPIException as e:
-            print("마진콜 오류! 빠르게 다시 포지션 종료를 시도합니다."+str(e))
+            print("마진콜 오류! 빠르게 다시 포지션 종료를 시도합니다." + str(e))
 
             if error_times >= 10:
-                self.shutdown =True
+                self.shutdown = True
                 print("Agent: 이런! 심각한 마진콜 오류입니다. 빠르게 안전한 셧다운을 시도하겠습니다.")
                 self.safe_shutdown()
             else:
@@ -95,17 +106,19 @@ class FutureAgent:
             return 0
         else:
             try:
+
                 self.agent.futures_cancel_all_open_orders()
                 self.agent.futures_create_order(position)
                 self.position = position['side']
                 self.position_price = position['price']
                 self.quantity = position['origQty']  # !!!! 이게 진짜 갯순지 셀필요 있음
+                self.time_steps += 1
                 self.order_able()
                 return self.percent()
             except BinanceAPIException as e:
                 if retry is True:
                     print("Agent: 주문 에러 형성! 강제종료에 진입합니다." + str(e))
-                    self.shutdown =True
+                    self.shutdown = True
                     self.safe_shutdown()
 
                     return
@@ -116,17 +129,21 @@ class FutureAgent:
     # 현 계좌 체크
     def check_account(self):
         try:
-            acount = self.agent.futures_account_balance()
-            acount = DataFrame.from_dict(acount)
-            account = acount.loc[acount['asset'] == 'USDT']
+            account = self.agent.futures_account_balance()
+            account = DataFrame.from_dict(account)
+
+            account = account.loc[account['asset'] == 'USDT']
+
             self.account = float(account['balance'].values)
+            self.withdrawAvailable = float(account['withdrawAvailable'].values)
         except BinanceAPIException as e:
             self.shutdown = True
-            print("Agent: 계좌와 연동에 실패했습니다! api를 확인해주세요!"+str(e))
+            print("Agent: 계좌와 연동에 실패했습니다! api를 확인해주세요!" + str(e))
+            self.safe_shutdown()
         return
 
     # 포지션 종료가 형성
-    def define_stop(self, stop_position):
+    def define_stop_price(self, stop_position):
         self.stop_price = stop_position
         return
 
@@ -141,25 +158,25 @@ class FutureAgent:
 
     # 마진거래 채결중 현재 수익/손실 측정
     def percent(self):
-        #self.check_current()
+        self.check_current()
         return self.leverage * (100 - 100 * (self.current_price / self.position_price))
 
     # 현재가 조회
     def check_current(self):
         try:
-            # !!!!!!작동여부 확인 필요
-            self.current_price = self.agent.futures_ticker(self.symbol)
+            self.current_price = float(self.agent.futures_symbol_ticker(symbol=self.symbol)['price'])
             return self.current_price
 
         except BinanceAPIException as e:
-            print("Agent:현재가 조회 에러"+str(e))
+            print("Agent:현재가 조회 에러" + str(e))
             self.shutdown = True
             self.safe_shutdown()
             return
 
     # 묶여있지 않고 부를 수 있는금액 !!!!! api 확인해서 넣어두기
     def callable_usdt(self):
-        return self.account
+        self.check_account()
+        return self.withdrawAvailable
 
     # 주문 가능 총량 !!!!!!! 이거 함수 있나 체크 필요
     def order_able(self):

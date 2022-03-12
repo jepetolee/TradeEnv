@@ -1,7 +1,7 @@
 from ScalpingEnv.agent import FutureAgent
+from pandas import DataFrame
+agent = FutureAgent(api_key="",
+                    api_secret="",test=True)
 
-agent = FutureAgent(api_key="",api_secret="",test=True)
-
-#current_price = agent.check_current()
-
-print(agent.percent())
+agent.step({
+})
